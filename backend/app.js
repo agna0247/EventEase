@@ -4,7 +4,7 @@ const cors = require("cors");
 const mongoose = require("mongoose");
 require("dotenv").config();
 
-const Event = require("./models/Event");
+const Event = require("./models/event");
 const Registration = require("./models/Registration");
 
 const app = express();
