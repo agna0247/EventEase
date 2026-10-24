@@ -1,10 +1,10 @@
 
 const express = require("express");
-const mongoose = require("mongoose");
 const cors = require("cors");
+const mongoose = require("mongoose");
 require("dotenv").config();
 
-const Event = require("./models/event");
+const Event = require("./models/Event");
 const Registration = require("./models/Registration");
 
 const app = express();
@@ -12,47 +12,80 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.get("/", (req, res) => {
-  res.send("EventEase backend is running");
-});
+let connectionPromise = null;
 
-// Get all events
-app.get("/api/events", async (req, res) => {
+async function connectDB() {
+  if (mongoose.connection.readyState === 1) {
+    return;
+  }
+
+  if (!process.env.MONGO_URI) {
+    throw new Error("MONGO_URI is missing from environment variables");
+  }
+
+  if (!connectionPromise) {
+    connectionPromise = mongoose
+      .connect(process.env.MONGO_URI)
+      .catch((error) => {
+        connectionPromise = null;
+        throw error;
+      });
+  }
+
+  await connectionPromise;
+}
+
+app.get("/", async (req, res) => {
   try {
-    const events = await Event.find().sort({ date: 1 });
-    res.json(events);
+    await connectDB();
+    res.json({ message: "EventEase backend is running" });
   } catch (error) {
-    res.status(500).json({ message: "Failed to fetch events" });
+    console.error("Database connection error:", error.message);
+    res.status(500).json({ error: "Database connection failed" });
   }
 });
 
-// Get one event
+app.get("/api/events", async (req, res) => {
+  try {
+    await connectDB();
+    const events = await Event.find().sort({ date: 1 });
+    res.json(events);
+  } catch (error) {
+    console.error("Fetch events error:", error.message);
+    res.status(500).json({ error: "Failed to fetch events" });
+  }
+});
+
 app.get("/api/events/:id", async (req, res) => {
   try {
+    await connectDB();
+
     if (!mongoose.isValidObjectId(req.params.id)) {
-      return res.status(400).json({ message: "Invalid event ID" });
+      return res.status(400).json({ error: "Invalid event ID" });
     }
 
     const event = await Event.findById(req.params.id);
 
     if (!event) {
-      return res.status(404).json({ message: "Event not found" });
+      return res.status(404).json({ error: "Event not found" });
     }
 
     res.json(event);
   } catch (error) {
-    res.status(500).json({ message: "Failed to fetch event" });
+    console.error("Fetch event error:", error.message);
+    res.status(500).json({ error: "Failed to fetch event" });
   }
 });
 
-// Add a new event
 app.post("/api/events", async (req, res) => {
   try {
+    await connectDB();
+
     const { title, category, date, location, description } = req.body;
 
     if (!title || !category || !date || !location || !description) {
       return res.status(400).json({
-        message: "Please fill in all event fields"
+        error: "Please provide title, category, date, location and description"
       });
     }
 
@@ -66,97 +99,108 @@ app.post("/api/events", async (req, res) => {
 
     res.status(201).json(event);
   } catch (error) {
-    res.status(400).json({ message: "Failed to create event" });
+    console.error("Create event error:", error.message);
+    res.status(500).json({ error: "Failed to create event" });
   }
 });
 
 app.post("/api/events/:id/register", async (req, res) => {
   try {
-    const { name, email } = req.body;
-    const eventId = req.params.id;
+    await connectDB();
 
-    if (!mongoose.isValidObjectId(eventId)) {
-      return res.status(400).json({ message: "Invalid event ID" });
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ error: "Invalid event ID" });
     }
 
-    if (!name?.trim() || !email?.trim()) {
+    const { name, email } = req.body;
+
+    if (!name || !email) {
       return res.status(400).json({
-        message: "Name and email are required"
+        error: "Name and email are required"
       });
     }
 
-    const event = await Event.findById(eventId);
+    const event = await Event.findById(req.params.id);
 
     if (!event) {
-      return res.status(404).json({ message: "Event not found" });
+      return res.status(404).json({ error: "Event not found" });
     }
 
     const registration = await Registration.create({
-      eventId,
-      name: name.trim(),
-      email: email.trim().toLowerCase()
+      eventId: event._id,
+      name,
+      email
     });
 
     res.status(201).json({
-      message: "Registration successful!",
+      message: "Registration successful",
       registration
     });
   } catch (error) {
-    res.status(500).json({ message: "Registration failed" });
+    console.error("Registration error:", error.message);
+    res.status(500).json({ error: "Failed to register for event" });
   }
 });
 
-// Get the number of registrations for an event
 app.get("/api/events/:id/registration-count", async (req, res) => {
   try {
-    const eventId = req.params.id;
+    await connectDB();
 
-    if (!mongoose.isValidObjectId(eventId)) {
-      return res.status(400).json({ message: "Invalid event ID" });
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ error: "Invalid event ID" });
     }
 
-    const count = await Registration.countDocuments({ eventId });
+    const count = await Registration.countDocuments({
+      eventId: req.params.id
+    });
+
     res.json({ count });
   } catch (error) {
-    res.status(500).json({ message: "Failed to get registration count" });
+    console.error("Registration count error:", error.message);
+    res.status(500).json({ error: "Failed to get registration count" });
   }
 });
 
 app.get("/api/registrations", async (req, res) => {
   try {
-    const email = (req.query.email || "").trim().toLowerCase();
+    await connectDB();
+
+    const email = req.query.email;
 
     if (!email) {
-      return res.status(400).json({
-        message: "Email address is required."
-      });
+      return res.status(400).json({ error: "Email is required" });
     }
 
     const registrations = await Registration.find({
-      email: email
-    })
-      .populate("eventId")
-      .sort({ registeredAt: -1 });
+      email: new RegExp(
+        "^" + email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$",
+        "i"
+      )
+    }).populate("eventId");
 
     res.json(registrations);
   } catch (error) {
-    res.status(500).json({
-      message: "Could not retrieve registrations."
-    });
+    console.error("Fetch registrations error:", error.message);
+    res.status(500).json({ error: "Failed to fetch registrations" });
   }
 });
 
-mongoose
-  .connect(process.env.MONGO_URI)
-  .then(() => {
-    console.log("MongoDB connected successfully");
+// Local development only
+if (require.main === module) {
+  const PORT = process.env.PORT || 5000;
 
-    app.listen(process.env.PORT || 5000, () => {
-      console.log("Server running on port 5000");
+  connectDB()
+    .then(() => {
+      console.log("MongoDB connected successfully");
+
+      app.listen(PORT, () => {
+        console.log(`Server running on port ${PORT}`);
+      });
+    })
+    .catch((error) => {
+      console.error("MongoDB connection failed:", error.message);
+      process.exit(1);
     });
-  })
-  .catch((error) => {
-    console.log("MongoDB connection error:", error.message);
-  });
+}
 
-
+module.exports = app;
